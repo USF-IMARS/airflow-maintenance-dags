@@ -116,7 +116,7 @@ def cleanup_function(**context):
     logging.info("Retrieving max_execution_date from XCom")
     max_date = context["ti"].xcom_pull(task_ids=print_configuration.task_id, key="max_date")
     max_date = dateutil.parser.parse(max_date) # stored as iso8601 str in xcom
-    
+
     logging.info("Retrieving dag_ignore_list from XCom")
     dag_ignore_list = context["ti"].xcom_pull(task_ids=print_configuration.task_id, key="dag_ignore_list")
     dag_ignore_list = [s.strip() for s in dag_ignore_list.split(',')] # transform string from xcom to list
@@ -136,10 +136,10 @@ def cleanup_function(**context):
     logging.info("dag_id:                   " + str(dag_id))
     logging.info("dag_ignore_list:          " + str(dag_ignore_list))
     logging.info("")
-    
+
     if any([re.compile(r).match(dag_id) for r in dag_ignore_list]):
-        logger.info("dag_id found in dag_ignore_list; skipping cleanup for dag_id " + str(str(dag_id))
-    else: 
+        logger.info("dag_id found in dag_ignore_list; skipping cleanup for dag_id " + str(str(dag_id)))
+    else:
         logging.info("Running Cleanup Process...")
         query = session.query(airflow_db_model).options(load_only(age_check_column))
         if keep_last_run:
@@ -147,7 +147,7 @@ def cleanup_function(**context):
             # https://github.com/teamclairvoyant/airflow-maintenance-dags/issues/41
             sub_query = session.query(func.max(age_check_column)).group_by(dag_id).from_self()
             query = query.filter(
-                age_check_column.notin_(sub_query), 
+                age_check_column.notin_(sub_query),
                 and_(age_check_column <= max_date)
             )
         else:
