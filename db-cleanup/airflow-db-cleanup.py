@@ -20,10 +20,9 @@ from airflow.operators.python_operator import PythonOperator
 from datetime import datetime, timedelta
 import os
 import logging
-import re
 
 import dateutil.parser
-from sqlalchemy import func, and_
+from sqlalchemy import func, and_, not_, or_
 from sqlalchemy.orm import load_only
 
 try:
@@ -38,7 +37,7 @@ SCHEDULE_INTERVAL = "@daily"            # How often to Run. @daily - Once a day 
 DAG_OWNER_NAME = "operations"           # Who is listed as the owner of this DAG in the Airflow Web Server
 ALERT_EMAIL_ADDRESSES = []              # List of email address to send email alerts to if this job fails
 DEFAULT_MAX_DB_ENTRY_AGE_IN_DAYS = int(Variable.get("max_db_entry_age_in_days", 30)) # Length to retain the log files if not already provided in the conf. If this is set to 30, the job will remove those files that are 30 days old or older.
-DEFAULT_DAG_IGNORE_LIST = str(Variable.get("dag_ignore_list", "")) # comma-separated list of dag_id regexes to *not* clear
+DEFAULT_DAG_IGNORE_LIST = str(Variable.get("dag_ignore_list", "")) # comma-separated list of dag_id SQL LIKE matches to *not* clear
 ENABLE_DELETE = True                    # Whether the job should delete the db entries or not. Included if you want to temporarily avoid deleting the db entries.
 DATABASE_OBJECTS = [                    # List of all the objects that will be deleted. Comment out the DB objects you want to skip.
     {"airflow_db_model": DagRun, "age_check_column": DagRun.execution_date, "dag_id": DagRun.dag_id, "keep_last_run": True},
@@ -76,11 +75,11 @@ def print_configuration_function(**context):
     dag_run_conf = context.get("dag_run").conf
     logging.info("dag_run.conf: " + str(dag_run_conf))
     max_db_entry_age_in_days = None
+    dag_ignore_list = None
     if dag_run_conf:
         max_db_entry_age_in_days = dag_run_conf.get("maxDBEntryAgeInDays", None)
         dag_ignore_list = dag_run_conf.get("dagIgnoreList", None)
-    logging.info("maxDBEntryAgeInDays from dag_run.conf: " + str(dag_run_conf))
-    logging.info("dagIgnoreList from dag_run.conf: " + str(dag_ignore_list))
+    logging.info("using dag_run.conf: " + str(dag_run_conf))
     if max_db_entry_age_in_days is None:
         logging.info("maxDBEntryAgeInDays conf variable isn't included. Using Default '" + str(DEFAULT_MAX_DB_ENTRY_AGE_IN_DAYS) + "'")
         max_db_entry_age_in_days = DEFAULT_MAX_DB_ENTRY_AGE_IN_DAYS
@@ -102,7 +101,7 @@ def print_configuration_function(**context):
 
     logging.info("Setting max_execution_date and dag_ignore_list to XCom for Downstream Processes")
     context["ti"].xcom_push(key="max_date", value=max_date.isoformat())
-    context["ti"].xcom_push(key="dag_ignore_list", value=dag_ignore_list.isoformat())
+    context["ti"].xcom_push(key="dag_ignore_list", value=dag_ignore_list)
 
 print_configuration = PythonOperator(
     task_id='print_configuration',
@@ -137,39 +136,40 @@ def cleanup_function(**context):
     logging.info("dag_ignore_list:          " + str(dag_ignore_list))
     logging.info("")
 
-    if any([re.compile(r).match(dag_id) for r in dag_ignore_list]):
-        logger.info("dag_id found in dag_ignore_list; skipping cleanup for dag_id " + str(str(dag_id)))
+    logging.info("Running Cleanup Process...")
+    query = session.query(airflow_db_model).options(load_only(age_check_column))
+    if keep_last_run:
+        # workaround for MySQL "table specified twice" issue
+        # https://github.com/teamclairvoyant/airflow-maintenance-dags/issues/41
+        sub_query = session.query(func.max(age_check_column)).group_by(dag_id).from_self()
+        query = query.filter(
+            age_check_column.notin_(sub_query),
+            and_(age_check_column <= max_date),
+            and_(not_(or_(*[DagModel.dag_id.like(d) for d in dag_ignore_list]))),
+        )
     else:
-        logging.info("Running Cleanup Process...")
-        query = session.query(airflow_db_model).options(load_only(age_check_column))
-        if keep_last_run:
-            # workaround for MySQL "table specified twice" issue
-            # https://github.com/teamclairvoyant/airflow-maintenance-dags/issues/41
-            sub_query = session.query(func.max(age_check_column)).group_by(dag_id).from_self()
-            query = query.filter(
-                age_check_column.notin_(sub_query),
-                and_(age_check_column <= max_date)
-            )
-        else:
-            query = query.filter(age_check_column <= max_date,)
+        query = query.filter(
+            age_check_column <= max_date,
+            and_(not_(or_(*[DagModel.dag_id.like(d) for d in dag_ignore_list]))),
+        )
 
-        entries_to_delete = query.all()
+    entries_to_delete = query.all()
 
-        logging.info("Query : " +  str(query))
-        logging.info("Process will be Deleting the following " + str(airflow_db_model.__name__) + "(s):")
-        for entry in entries_to_delete:
-            logging.info("\tEntry: " + str(entry) + ", Date: " + str(entry.__dict__[str(age_check_column).split(".")[1]]))
+    logging.info("Query : " +  str(query))
+    logging.info("Process will be Deleting the following " + str(airflow_db_model.__name__) + "(s):")
+    for entry in entries_to_delete:
+        logging.info("\tEntry: " + str(entry) + ", Date: " + str(entry.__dict__[str(age_check_column).split(".")[1]]))
 
-        logging.info("Process will be Deleting " + str(len(entries_to_delete)) + " " + str(airflow_db_model.__name__) + "(s)")
+    logging.info("Process will be Deleting " + str(len(entries_to_delete)) + " " + str(airflow_db_model.__name__) + "(s)")
 
-        if ENABLE_DELETE:
-            logging.info("Performing Delete...")
-            #using bulk delete
-            query.delete(synchronize_session=False)
-            session.commit()
-            logging.info("Finished Performing Delete")
-        else:
-            logging.warn("You're opted to skip deleting the db entries!!!")
+    if ENABLE_DELETE:
+        logging.info("Performing Delete...")
+        #using bulk delete
+        query.delete(synchronize_session=False)
+        session.commit()
+        logging.info("Finished Performing Delete")
+    else:
+        logging.warn("You're opted to skip deleting the db entries!!!")
 
     logging.info("Finished Running Cleanup Process")
 
