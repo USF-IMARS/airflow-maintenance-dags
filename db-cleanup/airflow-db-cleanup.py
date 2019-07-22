@@ -145,12 +145,12 @@ def cleanup_function(**context):
         query = query.filter(
             age_check_column.notin_(sub_query),
             and_(age_check_column <= max_date),
-            and_(not_(or_(*[DagModel.dag_id.like(d) for d in dag_ignore_list]))),
+            and_(not_(or_(*[dag_id.like(d) for d in dag_ignore_list]))),
         )
     else:
         query = query.filter(
             age_check_column <= max_date,
-            and_(not_(or_(*[DagModel.dag_id.like(d) for d in dag_ignore_list]))),
+            and_(not_(or_(*[dag_id.like(d) for d in dag_ignore_list]))),
         )
 
     entries_to_delete = query.all()
