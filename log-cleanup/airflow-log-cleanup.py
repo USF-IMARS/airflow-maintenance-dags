@@ -1,5 +1,6 @@
 """
-A maintenance workflow that you can deploy into Airflow to periodically clean out the task logs to avoid those getting too big.
+A maintenance workflow that you can deploy into Airflow to periodically clean
+out the task logs to avoid those getting too big.
 airflow trigger_dag --conf '{"maxLogAgeInDays":30}' airflow-log-cleanup
 --conf options:
     maxLogAgeInDays:<INT> - Optional
@@ -12,31 +13,49 @@ import os
 import logging
 
 try:
-    from airflow.utils import timezone #airflow.utils.timezone is available from v1.10 onwards
+    # airflow.utils.timezone is available from v1.10 onwards
+    from airflow.utils import timezone
     now = timezone.utcnow
 except ImportError:
     now = datetime.utcnow
 
-DAG_ID = os.path.basename(__file__).replace(".pyc", "").replace(".py", "")  # airflow-log-cleanup
+# airflow-log-cleanup
+DAG_ID = os.path.basename(__file__).replace(".pyc", "").replace(".py", "")
 START_DATE = datetime(year=1970, month=1, day=1)
 BASE_LOG_FOLDER = conf.get("core", "BASE_LOG_FOLDER")
-SCHEDULE_INTERVAL = "@daily"        # How often to Run. @daily - Once a day at Midnight
-DAG_OWNER_NAME = "operations"       # Who is listed as the owner of this DAG in the Airflow Web Server
-ALERT_EMAIL_ADDRESSES = []          # List of email address to send email alerts to if this job fails
-DEFAULT_MAX_LOG_AGE_IN_DAYS = Variable.get("max_log_age_in_days", 30)  # Length to retain the log files if not already provided in the conf. If this is set to 30, the job will remove those files that are 30 days old or older
-ENABLE_DELETE = True                # Whether the job should delete the logs or not. Included if you want to temporarily avoid deleting the logs
-NUMBER_OF_WORKERS = 1               # The number of worker nodes you have in Airflow. Will attempt to run this process for however many workers there are so that each worker gets its logs cleared.
+# How often to Run. @daily - Once a day at Midnight
+SCHEDULE_INTERVAL = "@daily"
+# Who is listed as the owner of this DAG in the Airflow Web Server
+DAG_OWNER_NAME = "operations"
+# List of email address to send email alerts to if this job fails
+ALERT_EMAIL_ADDRESSES = []
+# Length to retain the log files if not already provided in the conf.
+# If this is set to 30, the job will remove those files that are
+# 30 days old or older
+DEFAULT_MAX_LOG_AGE_IN_DAYS = Variable.get("max_log_age_in_days", 30)
+# Whether the job should delete the logs or not.
+# Included if you want to temporarily avoid deleting the logs
+ENABLE_DELETE = True
+# The number of worker nodes you have in Airflow.
+# Will attempt to run this process for however many workers there are so that
+# each worker gets its logs cleared.
+NUMBER_OF_WORKERS = 1
 DIRECTORIES_TO_DELETE = [BASE_LOG_FOLDER]
 ENABLE_DELETE_CHILD_LOG = Variable.get("enable_delete_child_log", "False")
 logging.info("ENABLE_DELETE_CHILD_LOG  " + ENABLE_DELETE_CHILD_LOG)
 
 if ENABLE_DELETE_CHILD_LOG.lower() == "true":
     try:
-        CHILD_PROCESS_LOG_DIRECTORY = conf.get("scheduler", "CHILD_PROCESS_LOG_DIRECTORY")
+        CHILD_PROCESS_LOG_DIRECTORY = conf.get(
+            "scheduler", "CHILD_PROCESS_LOG_DIRECTORY"
+        )
         if CHILD_PROCESS_LOG_DIRECTORY is not ' ':
             DIRECTORIES_TO_DELETE.append(CHILD_PROCESS_LOG_DIRECTORY)
     except Exception:
-        logging.exception("Cloud not obtain CHILD_PROCESS_LOG_DIRECTORY from Airflow Configurations")
+        logging.exception(
+            "Cloud not obtain CHILD_PROCESS_LOG_DIRECTORY from "
+            "Airflow Configurations"
+        )
 
 default_args = {
     'owner': DAG_OWNER_NAME,
@@ -80,7 +99,8 @@ echo ""
 echo "Running Cleanup Process..."
 if [ $TYPE == file ];
 then
-    FIND_STATEMENT="find ${BASE_LOG_FOLDER}/*/* -type f -mtime +${MAX_LOG_AGE_IN_DAYS}"
+    FIND_STATEMENT="find ${BASE_LOG_FOLDER}/*/* -type f \
+        -mtime +${MAX_LOG_AGE_IN_DAYS}"
 else
     FIND_STATEMENT="find ${BASE_LOG_FOLDER}/*/* -type d -empty "
 fi
@@ -88,7 +108,10 @@ echo "Executing Find Statement: ${FIND_STATEMENT}"
 FILES_MARKED_FOR_DELETE=`eval ${FIND_STATEMENT}`
 echo "Process will be Deleting the following File/directory:"
 echo "${FILES_MARKED_FOR_DELETE}"
-echo "Process will be Deleting `echo "${FILES_MARKED_FOR_DELETE}" | grep -v '^$' | wc -l ` file/directory(s)"     # "grep -v '^$'" - removes empty lines. "wc -l" - Counts the number of lines
+
+# "grep -v '^$'" - removes empty lines. "wc -l" - Counts the number of lines
+echo "Process will be Deleting `echo "${FILES_MARKED_FOR_DELETE}" | \
+    grep -v '^$' | wc -l ` file/directory(s)"
 echo ""
 if [ "${ENABLE_DELETE}" == "true" ];
 then
@@ -105,7 +128,7 @@ else
 fi
 echo "Finished Running Cleanup Process"
 """
-i=0
+i = 0
 for log_cleanup_id in range(1, NUMBER_OF_WORKERS + 1):
 
     for directory in DIRECTORIES_TO_DELETE:
@@ -120,7 +143,7 @@ for log_cleanup_id in range(1, NUMBER_OF_WORKERS + 1):
             task_id='log_cleanup_directory_' + str(i),
             bash_command=log_cleanup,
             provide_context=True,
-            params={"directory": str(directory), "type":"directory"},
+            params={"directory": str(directory), "type": "directory"},
             dag=dag)
         i = i + 1
 
