@@ -181,6 +181,29 @@ print_configuration = PythonOperator(
     dag=dag)
 
 
+def _get_entries_to_delete(
+    query, airflow_db_model, keep_last_run, age_check_column, dag_id,
+    max_date, dag_ignore_list
+):
+    if keep_last_run:
+        # workaround for MySQL "table specified twice" issue
+        # https://github.com/teamclairvoyant/airflow-maintenance-dags/issues/41
+        sub_query = session.query(
+            func.max(age_check_column)
+        ).group_by(dag_id).from_self()
+        query = query.filter(
+            age_check_column.notin_(sub_query),
+            and_(age_check_column <= max_date),
+            and_(not_(or_(*[dag_id.like(d) for d in dag_ignore_list]))),
+        )
+    else:
+        query = query.filter(
+            age_check_column <= max_date,
+            and_(not_(or_(*[dag_id.like(d) for d in dag_ignore_list]))),
+        )
+    return query.all()
+
+
 def cleanup_function(**context):
 
     logging.info("Retrieving max_execution_date from XCom")
@@ -216,24 +239,10 @@ def cleanup_function(**context):
     query = session.query(airflow_db_model).options(
         load_only(age_check_column)
     )
-    if keep_last_run:
-        # workaround for MySQL "table specified twice" issue
-        # https://github.com/teamclairvoyant/airflow-maintenance-dags/issues/41
-        sub_query = session.query(
-            func.max(age_check_column)
-        ).group_by(dag_id).from_self()
-        query = query.filter(
-            age_check_column.notin_(sub_query),
-            and_(age_check_column <= max_date),
-            and_(not_(or_(*[dag_id.like(d) for d in dag_ignore_list]))),
-        )
-    else:
-        query = query.filter(
-            age_check_column <= max_date,
-            and_(not_(or_(*[dag_id.like(d) for d in dag_ignore_list]))),
-        )
-
-    entries_to_delete = query.all()
+    entries_to_delete = _get_entries_to_delete(
+        query, airflow_db_model, keep_last_run, age_check_column, dag_id,
+        max_date, dag_ignore_list
+    )
 
     logging.info("Query : " + str(query))
     logging.info(
