@@ -1,0 +1,5 @@
+apache-airflow>=1.10.3
+
+# === for testing
+pytest>=5.1.2
+alchemy-mock>=0.4.1
