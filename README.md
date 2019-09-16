@@ -27,3 +27,14 @@ Some examples of setting variables using the airflow CLI:
 airflow variables --set dag_ignore_list "my_special_dag,my_other_dag_to_ignore"
 airflow variables --set max_db_entry_age_in_days 365
 ```
+
+## testing
+```bash
+git clone https://github.com/airflow-maintenance-dags
+# rename so python imports can work (replace dashes w/ underscores)
+mv airflow-maintenance-dags airflow_maintenance_dags
+pip install -r requirements.txt
+airflow initdb  # sets up local sqllite db for testing
+airflow version  # check that this runs w/o errors
+python3 -m pytest ./airflow_maintenance_dags
+```
