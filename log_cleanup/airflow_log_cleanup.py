@@ -8,9 +8,10 @@ airflow trigger_dag --conf '{"maxLogAgeInDays":30}' airflow-log-cleanup
 from airflow.models import DAG, Variable
 from airflow.configuration import conf
 from airflow.operators.bash_operator import BashOperator
-from datetime import datetime, timedelta
+from datetime import timedelta
 import os
 import logging
+import airflow
 
 try:
     # airflow.utils.timezone is available from v1.10 onwards
@@ -40,8 +41,11 @@ ENABLE_DELETE = True
 # Will attempt to run this process for however many workers there are so that
 # each worker gets its logs cleared.
 NUMBER_OF_WORKERS = 1
+
 DIRECTORIES_TO_DELETE = [BASE_LOG_FOLDER]
-ENABLE_DELETE_CHILD_LOG = Variable.get("enable_delete_child_log", "False")
+ENABLE_DELETE_CHILD_LOG = Variable.get(
+    "airflow_log_cleanup__enable_delete_child_log", "False"
+)
 logging.info("ENABLE_DELETE_CHILD_LOG  " + ENABLE_DELETE_CHILD_LOG)
 
 if ENABLE_DELETE_CHILD_LOG.lower() == "true":
@@ -59,6 +63,7 @@ if ENABLE_DELETE_CHILD_LOG.lower() == "true":
 
 default_args = {
     'owner': DAG_OWNER_NAME,
+    'depends_on_past': False,
     'email': ALERT_EMAIL_ADDRESSES,
     'email_on_failure': True,
     'email_on_retry': False,
@@ -74,7 +79,10 @@ dag = DAG(
     start_date=START_DATE,
     catchup=False
 )
-dag.doc_md = __doc__
+if hasattr(dag, 'doc_md'):
+    dag.doc_md = __doc__
+if hasattr(dag, 'catchup'):
+    dag.catchup = False
 
 log_cleanup = """
 echo "Getting Configurations..."
@@ -97,34 +105,43 @@ echo "TYPE:                 '${TYPE}'"
 
 echo ""
 echo "Running Cleanup Process..."
-if [ $TYPE == file ];
-then
-    FIND_STATEMENT="find ${BASE_LOG_FOLDER}/*/* -type f \
-        -mtime +${MAX_LOG_AGE_IN_DAYS}"
+if [ $TYPE == "file" ]; then
+    FIND_STATEMENT="find ${BASE_LOG_FOLDER}/*/* -type f -mtime +${MAX_LOG_AGE_IN_DAYS}"
+    DELETE_STMT="${FIND_STATEMENT} -exec rm -f {} \;"
+elif [ $TYPE == "task_directory" ]; then
+    FIND_STATEMENT="find ${BASE_LOG_FOLDER}/*/* -type d -empty"
+    DELETE_STMT="${FIND_STATEMENT} -prune -exec rm -rf {} \;"
+elif [ $TYPE == "dag_directory" ]; then
+    FIND_STATEMENT="find ${BASE_LOG_FOLDER}/* -type d -empty"
+    DELETE_STMT="${FIND_STATEMENT} -prune -exec rm -rf {} \;"
 else
-    FIND_STATEMENT="find ${BASE_LOG_FOLDER}/*/* -type d -empty "
+    exit 1
 fi
 echo "Executing Find Statement: ${FIND_STATEMENT}"
 FILES_MARKED_FOR_DELETE=`eval ${FIND_STATEMENT}`
-echo "Process will be Deleting the following File/directory:"
+echo "Process will be Deleting the following File(s)/Directory(s):"
 echo "${FILES_MARKED_FOR_DELETE}"
-
-# "grep -v '^$'" - removes empty lines. "wc -l" - Counts the number of lines
-echo "Process will be Deleting `echo "${FILES_MARKED_FOR_DELETE}" | \
-    grep -v '^$' | wc -l ` file/directory(s)"
+echo "Process will be Deleting `echo "${FILES_MARKED_FOR_DELETE}" \
+    | grep -v '^$' | wc -l` File(s)/Directory(s)" \
+    # "grep -v '^$'" - removes empty lines. \
+    # "wc -l" - Counts the number of lines
 echo ""
 if [ "${ENABLE_DELETE}" == "true" ];
 then
-    DELETE_STMT="${FIND_STATEMENT} -delete"
-    echo "Executing Delete Statement: ${DELETE_STMT}"
-    eval ${DELETE_STMT}
-    DELETE_STMT_EXIT_CODE=$?
-    if [ "${DELETE_STMT_EXIT_CODE}" != "0" ]; then
-        echo "Delete process failed with exit code '${DELETE_STMT_EXIT_CODE}'"
-        exit ${DELETE_STMT_EXIT_CODE}
+    if [ "${FILES_MARKED_FOR_DELETE}" != "" ];
+    then
+        echo "Executing Delete Statement: ${DELETE_STMT}"
+        eval ${DELETE_STMT}
+        DELETE_STMT_EXIT_CODE=$?
+        if [ "${DELETE_STMT_EXIT_CODE}" != "0" ]; then
+            echo "Delete process failed with exit code '${DELETE_STMT_EXIT_CODE}'"
+            exit ${DELETE_STMT_EXIT_CODE}
+        fi
+    else
+        echo "WARN: No File(s)/Directory(s) to Delete"
     fi
 else
-    echo "WARN: You're opted to skip deleting the file(s)/directory(s)!!!"
+    echo "WARN: You're opted to skip deleting the File(s)/Directory(s)!!!"
 fi
 echo "Finished Running Cleanup Process"
 """
@@ -138,11 +155,19 @@ for log_cleanup_id in range(1, NUMBER_OF_WORKERS + 1):
             params={"directory": str(directory), "type": "file"},
             dag=dag)
 
-        log_cleanup_dir_op = BashOperator(
-            task_id='log_cleanup_directory_' + str(i),
+        log_cleanup_task_dir_op = BashOperator(
+            task_id='log_cleanup_task_directory_' + str(i),
             bash_command=log_cleanup,
-            params={"directory": str(directory), "type": "directory"},
+            params={"directory": str(directory), "type": "task_directory"},
             dag=dag)
-        i = i + 1
 
-        log_cleanup_file_op.set_downstream(log_cleanup_dir_op)
+        log_cleanup_dag_dir_op = BashOperator(
+            task_id='log_cleanup_dag_directory_' + str(i),
+            bash_command=log_cleanup,
+            params={"directory": str(directory), "type": "dag_directory"},
+            dag=dag)
+
+        i += 1
+
+        log_cleanup_file_op.set_downstream(log_cleanup_task_dir_op)
+        log_cleanup_task_dir_op.set_downstream(log_cleanup_dag_dir_op)

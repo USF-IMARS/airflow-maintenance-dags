@@ -10,9 +10,11 @@ executors until the task is complete.
 airflow trigger_dag airflow-kill-halted-tasks
 
 """
-from airflow.models import DAG, DagModel, DagRun, TaskInstance, settings
+from airflow.models import DAG, DagModel, DagRun, TaskInstance
+from airflow import settings
 from airflow.operators.python_operator import PythonOperator, \
     ShortCircuitOperator
+
 from airflow.operators.email_operator import EmailOperator
 from sqlalchemy import and_
 from datetime import datetime, timedelta
@@ -68,7 +70,10 @@ dag = DAG(
     start_date=START_DATE,
     catchup=False
 )
-dag.doc_md = __doc__
+if hasattr(dag, 'doc_md'):
+    dag.doc_md = __doc__
+if hasattr(dag, 'catchup'):
+    dag.catchup = False
 
 uid_regex = "(\w+)"
 pid_regex = "(\w+)"
@@ -79,12 +84,10 @@ tty_regex = "([\w?/]+)"
 cpu_time_regex = "([\w:.]+)"
 command_regex = "(.+)"
 
-# When Search Command is:  ps -eaf | grep 'airflow run'
-full_regex = '\s*' + uid_regex + '\s+' + pid_regex + '\s+' + ppid_regex + \
-    '\s+' + processor_scheduling_regex + '\s+' + start_time_regex + '\s+' + \
-    tty_regex + '\s+' + cpu_time_regex + '\s+' + command_regex
+# When Search Command is:  ps -o pid -o cmd -u `whoami` | grep 'airflow run'
+full_regex = '\s*' + pid_regex + '\s+' + command_regex
 
-airflow_run_regex = '.*run\s([\w_-]*)\s([\w_-]*)\s([\w:.-]*).*'
+airflow_run_regex = '.*run\s([\w._-]*)\s([\w._-]*)\s([\w:.-]*).*'
 
 
 def parse_process_linux_string(line):
@@ -97,8 +100,9 @@ def parse_process_linux_string(line):
             logging.info(
                 "DEBUG: index: " + str(index) + ", group: " + str(group)
             )
-    pid = full_regex_match.group(2)
-    command = full_regex_match.group(8).strip()
+    pid = full_regex_match.group(1)
+    command = full_regex_match.group(2).strip()
+
     process = {"pid": pid, "command": command}
 
     if DEBUG:
@@ -142,7 +146,7 @@ def kill_halted_tasks_function(**context):
     logging.info("Running Cleanup Process...")
     logging.info("")
 
-    process_search_command = "ps -eaf | grep 'airflow run'"
+    process_search_command = "ps -o pid -o cmd -u `whoami` | grep 'airflow run'"
     logging.info("Running Search Process: " + process_search_command)
     search_output = os.popen(process_search_command).read()
     logging.info("Search Process Output: ")
@@ -154,7 +158,7 @@ def kill_halted_tasks_function(**context):
     search_output_filtered = [
         line for line in search_output.split("\n")
         if line is not None and
-        line.strip() is not "" and
+        line.strip() != "" and
         'grep' not in line and
         DAG_ID not in line
     ]
@@ -370,6 +374,7 @@ def kill_halted_tasks_function(**context):
     logging.info("")
     logging.info("Finished Running Cleanup Process")
 
+
 kill_halted_tasks_op = PythonOperator(
     task_id='kill_halted_tasks',
     python_callable=kill_halted_tasks_function,
@@ -431,6 +436,7 @@ def branch_function(**context):
     )
     # False = short circuit the dag and don't execute downstream tasks
     return False
+
 
 email_or_not_branch = ShortCircuitOperator(
     task_id="email_or_not_branch",
