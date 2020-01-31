@@ -9,6 +9,7 @@ from airflow.models import DAG, Variable
 from airflow.configuration import conf
 from airflow.operators.bash_operator import BashOperator
 from datetime import timedelta
+from datetime import datetime
 import os
 import logging
 import airflow
