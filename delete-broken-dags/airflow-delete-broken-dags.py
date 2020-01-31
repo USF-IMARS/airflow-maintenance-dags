@@ -4,7 +4,7 @@ A maintenance workflow that you can deploy into Airflow to periodically delete b
 airflow trigger_dag airflow-delete-broken-dags
 
 """
-from airflow.models import DAG, ImportError
+from airflow.models import DAG
 from airflow.operators.python_operator import PythonOperator
 from airflow import settings
 from datetime import timedelta
